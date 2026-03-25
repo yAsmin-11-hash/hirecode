@@ -1,0 +1,116 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (matches request.auth.uid)
+    // Fields:
+    //   - uid: string (required, immutable) - The unique identifier for the user.
+    //   - email: string (required, immutable) - The email address of the user.
+    //   - displayName: string (optional) - The display name of the user.
+    //   - photoURL: string (optional, format: uri) - The URL of the user's profile picture.
+    //   - role: string (required, enum: ['admin', 'user']) - The role of the user.
+    //   - createdAt: timestamp (required, immutable) - The timestamp when the user was created.
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "soltaniyasmin111@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) ||
+        request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) ||
+        request.resource.data.uid == resource.data.uid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string &&
+        (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'photoURL', 'role', 'createdAt', 'onboardingStatus', 'onboardingData', 'updatedAt']) &&
+             data.uid is string && data.uid.size() > 0 && data.uid.size() < 128 &&
+             data.email is string && isValidEmail(data.email) &&
+             (data.displayName == null || (data.displayName is string && data.displayName.size() < 100)) &&
+             (data.photoURL == null || isValidUrl(data.photoURL)) &&
+             data.role in ['admin', 'user'] &&
+             data.createdAt is timestamp &&
+             (!('onboardingStatus' in data) || (data.onboardingStatus is string && data.onboardingStatus.size() < 50)) &&
+             (!('onboardingData' in data) || data.onboardingData is map) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() < 50));
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can only read their own profile.
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Users can only create their own profile with role 'user'.
+      allow create: if isOwner(userId) && 
+                      isValidUser(request.resource.data) && 
+                      request.resource.data.role == 'user' &&
+                      uidUnchanged();
+      
+      // Users can only update their own profile, and cannot change their role or uid.
+      allow update: if (isOwner(userId) && 
+                        isValidUser(request.resource.data) && 
+                        request.resource.data.role == resource.data.role &&
+                        uidNotModified() &&
+                        areImmutableFieldsUnchanged(['uid', 'email', 'createdAt'])) ||
+                       (isAdmin() && 
+                        isValidUser(request.resource.data) && 
+                        uidNotModified() &&
+                        areImmutableFieldsUnchanged(['uid', 'email', 'createdAt']));
+      
+      // Only admins can delete users.
+      allow delete: if isAdmin();
+    }
+  }
+}
